@@ -37,8 +37,33 @@
 % registered processes:
 % http://www.erlang.org/doc/reference_manual/processes.html
 
+member(Log,State) ->
+	Enabled = maps:get(enabled,State),
+	if not Enabled ->
+		receive
+			{enable} ->
+				member(Log,State#{enabled := true});
+			_ ->
+				member(Log,State)
+		end;
+	true ->
+		receive
+			{append,Number,Value} ->			
+				member(Log ++ [{Number,Value}],State);
+			{getLog,Pid} ->
+				Pid ! Log,
+				member(Log,State);
+			{disable} ->
+				member(Log,State#{enabled := false})
+		end
+	end.
+
+member() ->
+	member([],(#{})#{enabled => true}).
+
 start_raft_member(UniqueId) ->
-    solveme.
+    Member = spawn(fun() -> member() end),
+    register(UniqueId, Member).
 
 
 % THE TESTME Function sets up a test with a running raft member
@@ -81,10 +106,14 @@ start_raft_member_test_() ->
 % integrity of the log.
 
 append_log(Id,Num,Something) ->
-    solveme.
+    whereis(Id) ! {append,Num,Something}.
 
 get_log(Id) ->
-    solveme.
+    whereis(Id) ! {getLog, self()},
+    receive
+    	Result ->
+    		Result
+    end.
 
 
 get_log_1_test_() ->
@@ -105,13 +134,13 @@ get_log_2_test_() ->
 % messages.  Any messages sent should be lost (i.e. not ever
 % recieved), except (of course) for enable_raft_member.
 disable_member(Id) ->
-    solveme.
+    whereis(Id) ! {disable}.
 
 
 
 % This puts the raft member back in normal state
 enable_member(Id) ->
-    solveme.
+    whereis(Id) ! {enable}.
 
 get_enable_disable_test_() ->
     testme(?_test([
@@ -354,7 +383,7 @@ make_leader(Id) ->
 % This is the equivalent of start_raft_member, except all the raft
 % members should be initalized to know about each other.
 start_raft_members(ListOfUniqueIds) ->
-    solveme.
+    lists:foreach(fun(Id) -> start_raft_member(Id) end, ListOfUniqueIds).
 
 
 ld_1_test_() ->
