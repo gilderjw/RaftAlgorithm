@@ -37,12 +37,48 @@
 % registered processes:
 % http://www.erlang.org/doc/reference_manual/processes.html
 
+
+append_entry(Log, EntryTuple) ->
+	
+
+append_entries(Log,State,Entry,Pid) ->
+	Term = maps:get(term,Entry),
+	PrevLogIndex = maps:get(prevLogIndex,Entry),
+	PrevLogTerm = maps:get(prevLogTerm,Entry),
+	EntryTuple = maps:get(entry,Entry),
+	LeaderCommit = maps:get(leaderCommit,Entry),
+	
+	MyTerm = maps:get(currentTerm,State),
+	if length(Log) < LeaderPrevLogIndex ->
+		Pid ! {MyTerm,false}
+	end,
+	TermAtPrevLogIndex = lists:nth(1,lists:nth(LeaderPrevLogIndex-1,Log)),
+
+	if MyTerm < LeaderTerm ->
+		Pid ! {MyTerm,false};
+	not TermAtPrevLogIndex == LeaderPrevLogTerm
+		Pid ! {MyTerm,false};
+
+	MyPrevLogIndex == LeaderPrevLogIndex and (not MyTerm == LeaderPrevLogTerm) ->
+		% Delete existing entry and all that follow
+		todo,
+		append_entry(Log,EntryTuple);
+	true ->
+		append_entry(Log,EntryTuple)
+	end,
+	MyCurrentIndex = MyPrevLogIndex + 1,
+	if LeaderCommit > 
+
+
+
+
+
 member(Log,State) ->
 	Enabled = maps:get(enabled,State),
 	if not Enabled ->
 		receive
 			{enable} ->
-				member(Log,State#{enabled := true});
+				member(Log,maps:update(enabled,true,State));
 			_ ->
 				member(Log,State)
 		end;
@@ -53,13 +89,28 @@ member(Log,State) ->
 			{getLog,Pid} ->
 				Pid ! Log,
 				member(Log,State);
+			{getTerm,Pid} ->
+				Pid ! maps:get(term,State),
+				member(Log,State);
+			{getCommitIndex,Pid} ->
+				Pid ! maps:get(commitIndex,State),
+				member(Log,State);
+			{append,Entries,Pid} ->
+				NewState = append_entries(Log,State,Entries,Pid),
+				member(Log,NewState);
 			{disable} ->
-				member(Log,State#{enabled := false})
+				member(Log,maps:update(enabled,false,State))
 		end
 	end.
 
 member() ->
-	member([],(#{})#{enabled => true}).
+	member([],maps:from_list(
+	[
+	{enabled,true},
+	{currentTerm,0},
+	{commitIndex,0},
+	{lastApplied,0}
+	])).
 
 start_raft_member(UniqueId) ->
     Member = spawn(fun() -> member() end),
@@ -179,10 +230,16 @@ get_enable_disable_test_() ->
 % in the Raft protocol.
 
 get_term(Id) ->
-    solveme.
+    whereis(Id) ! {getTerm,self()},
+    receive
+    	Term -> Term
+    end.
 
 get_commit_index(Id) ->
-    solveme.
+    whereis(Id) ! {getCommitIndex,self()},
+    receive
+    	Index -> Index
+    end.
 
 
 get_term_and_ci_test_() ->
