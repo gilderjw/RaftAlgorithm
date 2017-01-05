@@ -37,37 +37,47 @@
 % registered processes:
 % http://www.erlang.org/doc/reference_manual/processes.html
 
-
 append_entry(Log, EntryTuple) ->
 	
 
-append_entries(Log,State,Entry,Pid) ->
-	Term = maps:get(term,Entry),
-	PrevLogIndex = maps:get(prevLogIndex,Entry),
-	PrevLogTerm = maps:get(prevLogTerm,Entry),
-	EntryTuple = maps:get(entry,Entry),
-	LeaderCommit = maps:get(leaderCommit,Entry),
+append_entries(Log,State,EntriesState) ->
+	Term = maps:get(term,EntriesState),
+	PrevLogIndex = maps:get(prevLogIndex,EntriesState),
+	PrevLogTerm = maps:get(prevLogTerm,EntriesState),
+	Entries = maps:get(entry,EntriesState),
+	LeaderCommit = maps:get(leaderCommit,EntriesState),
 	
-	MyTerm = maps:get(currentTerm,State),
-	if length(Log) < LeaderPrevLogIndex ->
+	CurrentTerm = maps:get(currentTerm,State),
+
+	if Term < CurrentTerm ->
+		Pid ! {CurrentTerm, false}
+	end,
+
+
+
+	if length(Log) >= PrevLogIndex ->
+		{TermAtPrevLogIndex,_} = lists:nth(LeaderPrevLogIndex-1,Log),
 		Pid ! {MyTerm,false}
-	end,
-	TermAtPrevLogIndex = lists:nth(1,lists:nth(LeaderPrevLogIndex-1,Log)),
-
-	if MyTerm < LeaderTerm ->
-		Pid ! {MyTerm,false};
-	not TermAtPrevLogIndex == LeaderPrevLogTerm
-		Pid ! {MyTerm,false};
-
-	MyPrevLogIndex == LeaderPrevLogIndex and (not MyTerm == LeaderPrevLogTerm) ->
-		% Delete existing entry and all that follow
-		todo,
-		append_entry(Log,EntryTuple);
 	true ->
-		append_entry(Log,EntryTuple)
-	end,
-	MyCurrentIndex = MyPrevLogIndex + 1,
-	if LeaderCommit > 
+		Pid ! {MyTerm,false}
+	end.
+
+	
+		if TermAtPrevLogIndex
+		if MyTerm < LeaderTerm ->
+			Pid ! {MyTerm,false};
+		not TermAtPrevLogIndex == LeaderPrevLogTerm
+			Pid ! {MyTerm,false};
+
+		MyPrevLogIndex == LeaderPrevLogIndex and (not MyTerm == LeaderPrevLogTerm) ->
+			% Delete existing entry and all that follow
+			todo,
+			append_entry(Log,EntryTuple);
+		true ->
+			append_entry(Log,EntryTuple)
+		end,
+		MyCurrentIndex = MyPrevLogIndex + 1,
+		if LeaderCommit > 
 
 
 
@@ -84,7 +94,7 @@ member(Log,State) ->
 		end;
 	true ->
 		receive
-			{append,Number,Value} ->			
+			{appendLog,Number,Value} ->			
 				member(Log ++ [{Number,Value}],State);
 			{getLog,Pid} ->
 				Pid ! Log,
@@ -95,8 +105,8 @@ member(Log,State) ->
 			{getCommitIndex,Pid} ->
 				Pid ! maps:get(commitIndex,State),
 				member(Log,State);
-			{append,Entries,Pid} ->
-				NewState = append_entries(Log,State,Entries,Pid),
+			{appendEntries,Entries} ->
+				NewState = append_entries(Log,State,Entries),
 				member(Log,NewState);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
@@ -104,12 +114,10 @@ member(Log,State) ->
 	end.
 
 member() ->
-	member([],maps:from_list(
-	[
+	member([],maps:from_list([
 	{enabled,true},
 	{currentTerm,0},
-	{commitIndex,0},
-	{lastApplied,0}
+	{commitIndex,0}
 	])).
 
 start_raft_member(UniqueId) ->
@@ -123,6 +131,9 @@ start_raft_member(UniqueId) ->
 setup() ->
     start_raft_member(raft1),
     start_raft_members([m1,m2,m3]).
+    % Uncomment to debug sends/receives
+    % dbg:p(raft1,[s,r]).
+    % Then use dbg:tracer() to start the tracer
 
 
 cleanup(_) ->
@@ -157,7 +168,7 @@ start_raft_member_test_() ->
 % integrity of the log.
 
 append_log(Id,Num,Something) ->
-    whereis(Id) ! {append,Num,Something}.
+    whereis(Id) ! {appendLog,Num,Something}.
 
 get_log(Id) ->
     whereis(Id) ! {getLog, self()},
@@ -269,7 +280,9 @@ append_entries(Id,
                PrevLogTerm,
                Entries, % these will be of the form {Term,data} because you can get data from other terms
                LeaderCommit) ->
-    solveme.
+    whereis(Id) ! {
+    	append_entries
+    }
 
 
 % case 1: term is higher, prevs match, so data is added
