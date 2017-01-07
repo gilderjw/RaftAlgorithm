@@ -37,16 +37,16 @@
 % registered processes:
 % http://www.erlang.org/doc/reference_manual/processes.html
 
-append_entries(Log,_State,EntriesState,Pid) ->
+append_entries(Log,State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
 	PrevLogIndex = maps:get(prevLogIndex,EntriesState)+1,
 	PrevLogTerm = maps:get(prevLogTerm,EntriesState),
 	Entries = maps:get(entries,EntriesState),
 	LeaderCommit = maps:get(leaderCommit,EntriesState),
 	
-	CurrentTerm = maps:get(currentTerm,_State),
-  CommitIndex = maps:get(commitIndex,_State),
-  State = maps:put(currentTerm,Term,_State),
+	CurrentTerm = maps:get(currentTerm,State),
+  CommitIndex = maps:get(commitIndex,State),
+  
   {Success,NLog,NState} =
     % 1. Reply false if term < currentTerm (§5.1)
     if Term < CurrentTerm ->
@@ -59,25 +59,25 @@ append_entries(Log,_State,EntriesState,Pid) ->
         % 3. If an existing entry conflicts with a new one (same index
         % but different terms), delete the existing entry and all that
         % follow it (§5.3)
-        {false,lists:sublist(Log,PrevLogIndex),State};
+        {false,lists:sublist(Log,PrevLogIndex),maps:put(currentTerm,Term,State)};
       true ->
-        {true,Log,State}
+        {true,Log,maps:put(currentTerm,Term,State)}
       end
     end,
   if not Success ->
-    Pid ! {CurrentTerm,false},
+    Pid ! {maps:get(currentTerm,NState),false},
     {NLog,NState};
   true ->
-    Pid ! {CurrentTerm,true},
+    Pid ! {maps:get(currentTerm,NState),true},
     % 5. If leaderCommit > commitIndex, set commitIndex =
     % min(leaderCommit, index of last new entry
     if LeaderCommit > CommitIndex ->
-      NewState = maps:put(commitIndex,min(LeaderCommit,length(Log)),State),
+      NewState = maps:put(commitIndex,min(LeaderCommit,length(Log)),NState),
       % 4. Append any new entries not already in the log
       {lists:append(Log,Entries),NewState};
     true ->
       % 4. Append any new entries not already in the log
-      {lists:append(Log,Entries),State}
+      {lists:append(Log,Entries),NState}
     end
   end.
 
