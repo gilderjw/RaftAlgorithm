@@ -37,51 +37,36 @@
 % registered processes:
 % http://www.erlang.org/doc/reference_manual/processes.html
 
-append_entry(Log, EntryTuple) ->
-	
-
-append_entries(Log,State,EntriesState) ->
+append_entries(Log,State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
 	PrevLogIndex = maps:get(prevLogIndex,EntriesState),
 	PrevLogTerm = maps:get(prevLogTerm,EntriesState),
-	Entries = maps:get(entry,EntriesState),
+	Entries = maps:get(entries,EntriesState),
 	LeaderCommit = maps:get(leaderCommit,EntriesState),
 	
 	CurrentTerm = maps:get(currentTerm,State),
+  CommitIndex = maps:get(commitIndex,State),
 
-	if Term < CurrentTerm ->
-		Pid ! {CurrentTerm, false}
-	end,
-
-
-
-	if length(Log) >= PrevLogIndex ->
-		{TermAtPrevLogIndex,_} = lists:nth(LeaderPrevLogIndex-1,Log),
-		Pid ! {MyTerm,false}
-	true ->
-		Pid ! {MyTerm,false}
-	end.
-
-	
-		if TermAtPrevLogIndex
-		if MyTerm < LeaderTerm ->
-			Pid ! {MyTerm,false};
-		not TermAtPrevLogIndex == LeaderPrevLogTerm
-			Pid ! {MyTerm,false};
-
-		MyPrevLogIndex == LeaderPrevLogIndex and (not MyTerm == LeaderPrevLogTerm) ->
-			% Delete existing entry and all that follow
-			todo,
-			append_entry(Log,EntryTuple);
-		true ->
-			append_entry(Log,EntryTuple)
-		end,
-		MyCurrentIndex = MyPrevLogIndex + 1,
-		if LeaderCommit > 
-
-
-
-
+  if Term >= CurrentTerm ->
+  	if length(Log) >= PrevLogIndex ->
+  		{TermAtPrevLogIndex,_} = lists:nth(PrevLogIndex-1,Log),
+  		FixedLog =
+        if TermAtPrevLogIndex == PrevLogTerm ->
+          Log;
+        true ->
+          lists:sublist(log,PrevLogIndex-1)
+        end,
+      NewLog = lists:append(FixedLog,Entries),
+      if LeaderCommit > CommitIndex ->
+        NewCommitIndex = min(LeaderCommit,length(Log)-1),
+        {NewLog,maps:put(commitIndex,NewCommitIndex,State)};
+      true ->
+        {NewLog,State}
+      end
+    end
+  end,
+	Pid ! {CurrentTerm,false},
+  {Log,State}.
 
 member(Log,State) ->
 	Enabled = maps:get(enabled,State),
@@ -105,9 +90,9 @@ member(Log,State) ->
 			{getCommitIndex,Pid} ->
 				Pid ! maps:get(commitIndex,State),
 				member(Log,State);
-			{appendEntries,Entries} ->
-				NewState = append_entries(Log,State,Entries),
-				member(Log,NewState);
+			{appendEntries,EntriesState,Pid} ->
+				{NewLog,NewState} = append_entries(Log,State,EntriesState,Pid),
+				member(NewLog,NewState);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
 		end
@@ -274,6 +259,11 @@ get_term_and_ci_test_() ->
 % later steps of the protocol.  Then make your append entries filter
 % out everything except what my test case needs from the result
 
+% Term = maps:get(term,EntriesState),
+% PrevLogIndex = maps:get(prevLogIndex,EntriesState),
+% PrevLogTerm = maps:get(prevLogTerm,EntriesState),
+% Entries = maps:get(entry,EntriesState),
+% LeaderCommit = maps:get(leaderCommit,EntriesState),
 append_entries(Id,
                Term,
                PrevLogIndex,
@@ -281,8 +271,16 @@ append_entries(Id,
                Entries, % these will be of the form {Term,data} because you can get data from other terms
                LeaderCommit) ->
     whereis(Id) ! {
-    	append_entries
-    }
+    	append_entries,
+      maps:from_list([
+        {term,Term},
+        {prevLogIndex,PrevLogIndex},
+        {prevLogTerm,PrevLogTerm},
+        {entries,Entries},
+        {leaderCommit,LeaderCommit}
+      ]),
+      self()
+    }.
 
 
 % case 1: term is higher, prevs match, so data is added
