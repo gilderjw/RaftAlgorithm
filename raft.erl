@@ -54,14 +54,18 @@ append_entries(Log,State,EntriesState,Pid) ->
     true ->
       % 2. Reply false if log doesn’t contain an entry at prevLogIndex
       % whose term matches prevLogTerm (§5.3)
-      {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
-      if not MyPrevLogTerm == PrevLogTerm ->
-        % 3. If an existing entry conflicts with a new one (same index
-        % but different terms), delete the existing entry and all that
-        % follow it (§5.3)
-        {false,lists:sublist(Log,PrevLogIndex),maps:put(currentTerm,Term,State)};
+      if (PrevLogIndex > length(Log)) ->
+        {false,Log,maps:put(currentTerm,Term,State)};
       true ->
-        {true,Log,maps:put(currentTerm,Term,State)}
+        {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
+        if not MyPrevLogTerm == PrevLogTerm ->
+          % 3. If an existing entry conflicts with a new one (same index
+          % but different terms), delete the existing entry and all that
+          % follow it (§5.3)
+          {false,lists:sublist(Log,PrevLogIndex),maps:put(currentTerm,Term,State)};
+        true ->
+          {true,Log,maps:put(currentTerm,Term,State)}
+        end
       end
     end,
   if not Success ->
@@ -104,9 +108,7 @@ member(Log,State) ->
 				Pid ! maps:get(commitIndex,State),
 				member(Log,State);
 			{appendEntries,EntriesState,Pid} ->
-        io:fwrite("lol"),
 				{NewLog,NewState} = append_entries(Log,State,EntriesState,Pid),
-        io:fwrite("lol"),
 				member(NewLog,NewState);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
