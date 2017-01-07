@@ -1,5 +1,5 @@
 -module(raft).
--export([start_raft_member/1,start_raft_members/1,append_log/3,make_leader/1]).
+-export([start_raft_member/1,start_raft_members/1,append_log/3,make_leader/1,append_entries/4]).
 -include_lib("eunit/include/eunit.hrl").
 
 
@@ -37,36 +37,49 @@
 % registered processes:
 % http://www.erlang.org/doc/reference_manual/processes.html
 
-append_entries(Log,State,EntriesState,Pid) ->
+append_entries(Log,_State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
-	PrevLogIndex = maps:get(prevLogIndex,EntriesState),
+	PrevLogIndex = maps:get(prevLogIndex,EntriesState)+1,
 	PrevLogTerm = maps:get(prevLogTerm,EntriesState),
 	Entries = maps:get(entries,EntriesState),
 	LeaderCommit = maps:get(leaderCommit,EntriesState),
 	
-	CurrentTerm = maps:get(currentTerm,State),
-  CommitIndex = maps:get(commitIndex,State),
-
-  if Term >= CurrentTerm ->
-  	if length(Log) >= PrevLogIndex ->
-  		{TermAtPrevLogIndex,_} = lists:nth(PrevLogIndex-1,Log),
-  		FixedLog =
-        if TermAtPrevLogIndex == PrevLogTerm ->
-          Log;
-        true ->
-          lists:sublist(log,PrevLogIndex-1)
-        end,
-      NewLog = lists:append(FixedLog,Entries),
-      if LeaderCommit > CommitIndex ->
-        NewCommitIndex = min(LeaderCommit,length(Log)-1),
-        {NewLog,maps:put(commitIndex,NewCommitIndex,State)};
+	CurrentTerm = maps:get(currentTerm,_State),
+  CommitIndex = maps:get(commitIndex,_State),
+  State = maps:put(currentTerm,Term,_State),
+  {Success,NLog,NState} =
+    % 1. Reply false if term < currentTerm (§5.1)
+    if Term < CurrentTerm ->
+      {false,Log,State};
+    true ->
+      % 2. Reply false if log doesn’t contain an entry at prevLogIndex
+      % whose term matches prevLogTerm (§5.3)
+      {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
+      if not MyPrevLogTerm == PrevLogTerm ->
+        % 3. If an existing entry conflicts with a new one (same index
+        % but different terms), delete the existing entry and all that
+        % follow it (§5.3)
+        {false,lists:sublist(Log,PrevLogIndex),State};
       true ->
-        {NewLog,State}
+        {true,Log,State}
       end
+    end,
+  if not Success ->
+    Pid ! {CurrentTerm,false},
+    {NLog,NState};
+  true ->
+    Pid ! {CurrentTerm,true},
+    % 5. If leaderCommit > commitIndex, set commitIndex =
+    % min(leaderCommit, index of last new entry
+    if LeaderCommit > CommitIndex ->
+      NewState = maps:put(commitIndex,min(LeaderCommit,length(Log)),State),
+      % 4. Append any new entries not already in the log
+      {lists:append(Log,Entries),NewState};
+    true ->
+      % 4. Append any new entries not already in the log
+      {lists:append(Log,Entries),State}
     end
-  end,
-	Pid ! {CurrentTerm,false},
-  {Log,State}.
+  end.
 
 member(Log,State) ->
 	Enabled = maps:get(enabled,State),
@@ -82,16 +95,18 @@ member(Log,State) ->
 			{appendLog,Number,Value} ->			
 				member(Log ++ [{Number,Value}],State);
 			{getLog,Pid} ->
-				Pid ! Log,
+				Pid ! lists:nthtail(1,Log),
 				member(Log,State);
 			{getTerm,Pid} ->
-				Pid ! maps:get(term,State),
+				Pid ! maps:get(currentTerm,State),
 				member(Log,State);
 			{getCommitIndex,Pid} ->
 				Pid ! maps:get(commitIndex,State),
 				member(Log,State);
 			{appendEntries,EntriesState,Pid} ->
+        io:fwrite("lol"),
 				{NewLog,NewState} = append_entries(Log,State,EntriesState,Pid),
+        io:fwrite("lol"),
 				member(NewLog,NewState);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
@@ -99,37 +114,37 @@ member(Log,State) ->
 	end.
 
 member() ->
-	member([],maps:from_list([
+	member([{0,0}],maps:from_list([
 	{enabled,true},
 	{currentTerm,0},
 	{commitIndex,0}
 	])).
 
 start_raft_member(UniqueId) ->
-    Member = spawn(fun() -> member() end),
-    register(UniqueId, Member).
+  Member = spawn(fun() -> member() end),
+  register(UniqueId, Member).
 
 
 % THE TESTME Function sets up a test with a running raft member
 % that is then killed after the test runs
 
 setup() ->
-    start_raft_member(raft1),
-    start_raft_members([m1,m2,m3]).
-    % Uncomment to debug sends/receives
-    % dbg:p(raft1,[s,r]).
-    % Then use dbg:tracer() to start the tracer
+  start_raft_member(raft1),
+  start_raft_members([m1,m2,m3]).
+  % Uncomment to debug sends/receives
+  % dbg:p(raft1,[s,r]).
+  % Then use dbg:tracer() to start the tracer
 
 
 cleanup(_) ->
-    exit(whereis(raft1),kill),
-    exit(whereis(m1),kill),
-    exit(whereis(m2),kill),
-    exit(whereis(m3),kill),
-    timer:sleep(10). % give it a little time to die
+  exit(whereis(raft1),kill),
+  exit(whereis(m1),kill),
+  exit(whereis(m2),kill),
+  exit(whereis(m3),kill),
+  timer:sleep(10). % give it a little time to die
 
 testme(Test) ->
-    {setup, fun setup/0, fun cleanup/1, [ Test ] }.
+  {setup, fun setup/0, fun cleanup/1, [ Test ] }.
 
 
 
@@ -148,40 +163,40 @@ start_raft_member_test_() ->
 % will eventually become log entries and the nums will have official
 % meanings, but that's in the future.  append_log won't ever be used
 % by the official raft system directly - just a test function to get
-% started.  Similarly, the raft algorithm won't ever use get_log
+% started.  Similarly, the raft algorithm won't ever use `
 % directly, but we will use it in future tests to verify the correct
 % integrity of the log.
 
 append_log(Id,Num,Something) ->
-    whereis(Id) ! {appendLog,Num,Something}.
+  whereis(Id) ! {appendLog,Num,Something}.
 
 get_log(Id) ->
-    whereis(Id) ! {getLog, self()},
-    receive
-    	Result ->
-    		Result
-    end.
+  whereis(Id) ! {getLog, self()},
+  receive
+  	Result ->
+  		Result
+  end.
 
 
 get_log_1_test_() ->
-    testme(?_test(
-              ?assertEqual([],get_log(raft1))
-             )).
+  testme(?_test(
+            ?assertEqual([],get_log(raft1))
+           )).
 
 
 get_log_2_test_() ->
-    testme(?_test([
-              ?assertEqual([],get_log(raft1)),
-              append_log(raft1,1,foo),
-              ?assertEqual([{1,foo}],get_log(raft1))
-             ])).
+  testme(?_test([
+            ?assertEqual([],get_log(raft1)),
+            append_log(raft1,1,foo),
+            ?assertEqual([{1,foo}],get_log(raft1))
+           ])).
 
 
 % This puts the raft member in a state where it no longer responds to
 % messages.  Any messages sent should be lost (i.e. not ever
 % recieved), except (of course) for enable_raft_member.
 disable_member(Id) ->
-    whereis(Id) ! {disable}.
+  whereis(Id) ! {disable}.
 
 
 
@@ -259,11 +274,6 @@ get_term_and_ci_test_() ->
 % later steps of the protocol.  Then make your append entries filter
 % out everything except what my test case needs from the result
 
-% Term = maps:get(term,EntriesState),
-% PrevLogIndex = maps:get(prevLogIndex,EntriesState),
-% PrevLogTerm = maps:get(prevLogTerm,EntriesState),
-% Entries = maps:get(entry,EntriesState),
-% LeaderCommit = maps:get(leaderCommit,EntriesState),
 append_entries(Id,
                Term,
                PrevLogIndex,
@@ -271,7 +281,7 @@ append_entries(Id,
                Entries, % these will be of the form {Term,data} because you can get data from other terms
                LeaderCommit) ->
     whereis(Id) ! {
-    	append_entries,
+    	appendEntries,
       maps:from_list([
         {term,Term},
         {prevLogIndex,PrevLogIndex},
@@ -280,7 +290,11 @@ append_entries(Id,
         {leaderCommit,LeaderCommit}
       ]),
       self()
-    }.
+    },
+    receive
+      Result -> Result
+    end.
+
 
 
 % case 1: term is higher, prevs match, so data is added
