@@ -58,7 +58,7 @@ append_entries(Log,State,EntriesState,Pid) ->
         {false,Log,maps:put(currentTerm,Term,State)};
       true ->
         {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
-        if not MyPrevLogTerm == PrevLogTerm ->
+        if not (MyPrevLogTerm == PrevLogTerm) ->
           % 3. If an existing entry conflicts with a new one (same index
           % but different terms), delete the existing entry and all that
           % follow it (§5.3)
