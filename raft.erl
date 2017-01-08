@@ -39,7 +39,7 @@
 
 append_entries(Log,State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
-	PrevLogIndex = maps:get(prevLogIndex,EntriesState)+1,
+	PrevLogIndex = maps:get(prevLogIndex,EntriesState),
 	PrevLogTerm = maps:get(prevLogTerm,EntriesState),
 	Entries = maps:get(entries,EntriesState),
 	LeaderCommit = maps:get(leaderCommit,EntriesState),
@@ -56,13 +56,15 @@ append_entries(Log,State,EntriesState,Pid) ->
       % whose term matches prevLogTerm (§5.3)
       if (PrevLogIndex > length(Log)) ->
         {false,Log,maps:put(currentTerm,Term,State)};
+      ((PrevLogIndex == 0) and (CommitIndex == 0)) ->
+        {true,Log,maps:put(currentTerm,Term,State)};
       true ->
         {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
         if not (MyPrevLogTerm == PrevLogTerm) ->
           % 3. If an existing entry conflicts with a new one (same index
           % but different terms), delete the existing entry and all that
           % follow it (§5.3)
-          {false,lists:sublist(Log,PrevLogIndex),maps:put(currentTerm,Term,State)};
+          {false,lists:sublist(Log,PrevLogIndex+1),maps:put(currentTerm,Term,State)};
         true ->
           {true,Log,maps:put(currentTerm,Term,State)}
         end
@@ -99,7 +101,7 @@ member(Log,State) ->
 			{appendLog,Number,Value} ->			
 				member(Log ++ [{Number,Value}],State);
 			{getLog,Pid} ->
-				Pid ! lists:nthtail(1,Log),
+				Pid ! Log,
 				member(Log,State);
 			{getTerm,Pid} ->
 				Pid ! maps:get(currentTerm,State),
@@ -116,7 +118,7 @@ member(Log,State) ->
 	end.
 
 member() ->
-	member([{0,0}],maps:from_list([
+	member([],maps:from_list([
 	{enabled,true},
 	{currentTerm,0},
 	{commitIndex,0}
