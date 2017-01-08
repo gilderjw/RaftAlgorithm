@@ -1,41 +1,16 @@
 -module(raft).
--export([start_raft_member/1,start_raft_members/1,append_log/3,make_leader/1,append_entries/4]).
+-export([start_raft_member/1,start_raft_members/1,append_log/3,make_leader/1,append_entries/4,eztest/0]).
 -include_lib("eunit/include/eunit.hrl").
 
-
-%% In this assignment, we're going to be implmenting part of the Raft
-%% algorythm - a distributed consensious reaching algorithm, designed
-%% to be simpler to understand than the more complex Paxos algorithm.
-%% We won't implement the whole thing, just the data updating aspect.
-%% The part we won't do is leader elections - it isn't hard to do, but
-%% it's a fair bit of coding that I didn't think would teach you more.
-
-
-%% The algorithm itself has a wide variety of web resources.  I
-%% personally like two:
-
-% http://thesecretlivesofdata.com/raft/ 
-% Cool animation that will give  you the gist
-
-% https://ramcloud.stanford.edu/wiki/download/attachments/11370504/raft.pdf
-% Original paper, very accessible.  I refer to this one several
-% times in this doc.  I recommend you read the revelant parts carefully.
-
-%% You can implement the details of the protcol any way you wish, but
-%% to facilitate my testing you must implement a few key functions.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% PART 1: Storage Server (15 points)
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-% This creates a raft member process that can be used for subsequent
-% calls.
-%
-% The UniqueID is an atom (e.g. raft1) and when you create the member
-% you should register it under that atom using prolog's facility
-% registered processes:
-% http://www.erlang.org/doc/reference_manual/processes.html
+eztest() ->
+  setup(),
+  %dbg:tracer(),
+  make_leader(m1),
+  new_entry(m1,newEntry),
+  erlang:display(get_log(m1)),
+  timer:sleep(20),
+  cleanup(blah).
+  %eunit:test(raft:ld_2_test_()).
 
 append_entries(Log,State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
@@ -46,7 +21,6 @@ append_entries(Log,State,EntriesState,Pid) ->
 	
 	CurrentTerm = maps:get(currentTerm,State),
   CommitIndex = maps:get(commitIndex,State),
-  
   {Success,NLog,NState} =
     % 1. Reply false if term < currentTerm (§5.1)
     if Term < CurrentTerm ->
@@ -55,17 +29,21 @@ append_entries(Log,State,EntriesState,Pid) ->
       % 2. Reply false if log doesn’t contain an entry at prevLogIndex
       % whose term matches prevLogTerm (§5.3)
       if (PrevLogIndex > length(Log)) ->
+        %io:format(standard_error,"No entry at prevLogIndex",[]),
         {false,Log,maps:put(currentTerm,Term,State)};
       (PrevLogIndex == 0) ->
-        {true,[],maps:put(currentTerm,Term,State)};
+        %io:format(standard_error,"prevLogIndex==0",[]),
+        {true,[],maps:put(commitIndex,PrevLogIndex,maps:put(currentTerm,Term,State))};
       true ->
         {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
         if not (MyPrevLogTerm == PrevLogTerm) ->
+          %io:format(standard_error,"MyPrevLogTerm = ~p, PrevLogTerm = ~p",[MyPrevLogTerm,PrevLogTerm]),
           % 3. If an existing entry conflicts with a new one (same index
           % but different terms), delete the existing entry and all that
           % follow it (§5.3)
           {false,lists:sublist(Log,PrevLogIndex+1),maps:put(currentTerm,Term,State)};
         true ->
+          %io:format(standard_error,"No conflict, appending as usual",[]),
           {true,lists:sublist(Log,PrevLogIndex),maps:put(currentTerm,Term,State)}
         end
       end
@@ -78,8 +56,7 @@ append_entries(Log,State,EntriesState,Pid) ->
     % 5. If leaderCommit > commitIndex, set commitIndex =
     % min(leaderCommit, index of last new entry
     if LeaderCommit > CommitIndex ->
-      NewState = maps:put(commitIndex,min(LeaderCommit,length(Log)),NState),
-      % 4. Append any new entries not already in the log
+      NewState = maps:put(commitIndex,min(LeaderCommit,length(NLog)+length(Entries)),NState),      % 4. Append any new entries not already in the log
       {lists:append(NLog,Entries),NewState};
     true ->
       % 4. Append any new entries not already in the log
@@ -88,10 +65,12 @@ append_entries(Log,State,EntriesState,Pid) ->
   end.
 
 getNthLog(N,Log) ->
-  if (N == 0) ->
+  %io:format(standard_error,"N = ~p, Log = ~p",[N,Log]),
+  if (N == 0) or (length(Log) == 0) ->
     0;
   (length(Log) >= N) ->
-    lists:nth(1,lists:nth(N,Log));
+    {A,_} = lists:nth(N,Log),
+    A;
   true ->
     0
   end.
@@ -119,11 +98,13 @@ member(Log,State) ->
 				Pid ! maps:get(commitIndex,State),
 				member(Log,State);
 			{appendEntries,EntriesState,Pid} ->
+        % erlang:display("appendEntries on "),
+        % erlang:display(self()),
 				{NewLog,NewState} = append_entries(Log,State,EntriesState,Pid),
 				member(NewLog,NewState);
       {register,ListOfUniqueIds} ->
         member(Log,maps:put(peers,sets:union(maps:get(peers,State),sets:from_list(ListOfUniqueIds)),State));
-      {makeLeader} ->
+      {makeLeader,Pid} ->
         NewState = maps:put(currentTerm,maps:get(currentTerm,State)+1,State),
         CommitIndex = maps:get(commitIndex,NewState),
         lists:foreach(fun(Id) ->
@@ -133,9 +114,13 @@ member(Log,State) ->
             CommitIndex,
             getNthLog(CommitIndex,Log),
             [],
-            leaderCommit)
+            CommitIndex)
         end, sets:to_list(maps:get(peers,NewState))),
+        Pid ! finished,
         member(Log,NewState);
+      {getPeers,Pid} ->
+        Pid ! sets:to_list(maps:get(peers,State)),
+        member(Log,State);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
 		end
@@ -159,9 +144,9 @@ start_raft_member(UniqueId) ->
 
 setup() ->
   start_raft_member(raft1),
-  start_raft_members([m1,m2,m3]).
+  start_raft_members([m1,m2,m3]),
   % Uncomment to debug sends/receives
-  % dbg:p(raft1,[s,r]).
+  dbg:p(m1,[s,r]).
   % Then use dbg:tracer() to start the tracer
 
 
@@ -489,15 +474,18 @@ ae_hist5_test_() ->
 % some process a leader that could not normally be elected could cause
 % data to be lost.
 make_leader(Id) ->
-  whereis(Id) ! {makeLeader}.
+  whereis(Id) ! {makeLeader,self()},
+  receive
+    _ -> done
+  end.
 
 % This is the equivalent of start_raft_member, except all the raft
 % members should be initalized to know about each other.
 start_raft_members(ListOfUniqueIds) ->
   lists:foreach(fun(Id) ->
     start_raft_member(Id),
-    NotMyId = lists:delete(Id,ListOfUniqueIds),
-    whereis(Id) ! {register,NotMyId}
+    %NotMyId = lists:delete(Id,ListOfUniqueIds),
+    whereis(Id) ! {register,ListOfUniqueIds}%NotMyId}
   end, ListOfUniqueIds).
 
 
@@ -520,8 +508,40 @@ ld_1_test_() ->
 % notified if your entry was added, but get_log and get_commit_index
 % will work fine for us in this regard.
 
+% append_entries(Id,
+%                Term,
+%                PrevLogIndex,
+%                PrevLogTerm,
+%                Entries, % these will be of the form {Term,data} because you can get data from other terms
+%                LeaderCommit) ->
+
 new_entry(Id, NewEntryData) ->
-    solveme.
+  CurrentTerm = get_term(Id),
+  Entry = [{CurrentTerm,NewEntryData}],
+  CommitIndex = get_commit_index(Id),
+  NthLog = getNthLog(CommitIndex,get_log(Id)),
+
+  %erlang:display(#{
+                 % term=>CurrentTerm,
+                 % commitIndex=>CommitIndex,
+                 % nthLog=>NthLog,
+                 % entry=>Entry,
+                 % leaderCommit=>CommitIndex+1
+                 % }),
+  whereis(Id) ! {getPeers,self()},
+  receive
+    Peers ->
+      lists:foreach(fun(NewId) ->
+          append_entries(
+            NewId,
+            CurrentTerm,
+            CommitIndex,
+            NthLog,
+            Entry,
+            CommitIndex+1)
+          end,
+        Peers)
+  end.
 
 ld_2_test_() ->
     testme(?_test([make_leader(m1),
