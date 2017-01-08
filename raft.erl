@@ -87,6 +87,13 @@ append_entries(Log,State,EntriesState,Pid) ->
     end
   end.
 
+getNthLog(N,Log) ->
+  if (length(Log) >= N) ->
+    lists:nth(1,lists:nth(N,Log));
+  true ->
+    0
+  end.
+
 member(Log,State) ->
 	Enabled = maps:get(enabled,State),
 	if not Enabled ->
@@ -112,6 +119,21 @@ member(Log,State) ->
 			{appendEntries,EntriesState,Pid} ->
 				{NewLog,NewState} = append_entries(Log,State,EntriesState,Pid),
 				member(NewLog,NewState);
+      {register,ListOfUniqueIds} ->
+        member(Log,maps:put(peers,sets:union(maps:get(peers,State),ListOfUniqueIds),State));
+      {makeLeader} ->
+        NewState = maps:put(currentTerm,maps:get(currentTerm,State)+1,State),
+        CommitIndex = maps:get(commitIndex,NewState),
+        lists:foreach(fun(Id) ->
+          append_entries(
+            Id,
+            maps:get(currentTerm,NewState),
+            CommitIndex,
+            getNthLog(CommitIndex,Log),
+            [],
+            leaderCommit)
+        end, sets:to_list(maps:get(peers,NewState))),
+        member(Log,NewState);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
 		end
@@ -119,6 +141,7 @@ member(Log,State) ->
 
 member() ->
 	member([],maps:from_list([
+  {peers,sets:from_list([])},
 	{enabled,true},
 	{currentTerm,0},
 	{commitIndex,0}
@@ -464,12 +487,16 @@ ae_hist5_test_() ->
 % some process a leader that could not normally be elected could cause
 % data to be lost.
 make_leader(Id) ->
-    solveme.
+  whereis(Id) ! {makeLeader}.
 
 % This is the equivalent of start_raft_member, except all the raft
 % members should be initalized to know about each other.
 start_raft_members(ListOfUniqueIds) ->
-    lists:foreach(fun(Id) -> start_raft_member(Id) end, ListOfUniqueIds).
+  lists:foreach(fun(Id) ->
+    start_raft_member(Id),
+    NotMyId = lists:delete(Id,ListOfUniqueIds),
+    whereis(Id) ! {register,NotMyId}
+  end, ListOfUniqueIds).
 
 
 ld_1_test_() ->
