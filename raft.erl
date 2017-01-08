@@ -66,7 +66,7 @@ append_entries(Log,State,EntriesState,Pid) ->
           % follow it (§5.3)
           {false,lists:sublist(Log,PrevLogIndex+1),maps:put(currentTerm,Term,State)};
         true ->
-          {true,Log,maps:put(currentTerm,Term,State)}
+          {true,lists:sublist(Log,PrevLogIndex),maps:put(currentTerm,Term,State)}
         end
       end
     end,
@@ -80,10 +80,10 @@ append_entries(Log,State,EntriesState,Pid) ->
     if LeaderCommit > CommitIndex ->
       NewState = maps:put(commitIndex,min(LeaderCommit,length(Log)),NState),
       % 4. Append any new entries not already in the log
-      {lists:append(Log,Entries),NewState};
+      {lists:append(NLog,Entries),NewState};
     true ->
       % 4. Append any new entries not already in the log
-      {lists:append(Log,Entries),NState}
+      {lists:append(NLog,Entries),NState}
     end
   end.
 
