@@ -56,8 +56,8 @@ append_entries(Log,State,EntriesState,Pid) ->
       % whose term matches prevLogTerm (§5.3)
       if (PrevLogIndex > length(Log)) ->
         {false,Log,maps:put(currentTerm,Term,State)};
-      ((PrevLogIndex == 0) and (CommitIndex == 0)) ->
-        {true,Log,maps:put(currentTerm,Term,State)};
+      (PrevLogIndex == 0) ->
+        {true,[],maps:put(currentTerm,Term,State)};
       true ->
         {MyPrevLogTerm,_} = lists:nth(PrevLogIndex,Log),
         if not (MyPrevLogTerm == PrevLogTerm) ->
