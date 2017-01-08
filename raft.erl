@@ -88,7 +88,9 @@ append_entries(Log,State,EntriesState,Pid) ->
   end.
 
 getNthLog(N,Log) ->
-  if (length(Log) >= N) ->
+  if (N == 0) ->
+    0;
+  (length(Log) >= N) ->
     lists:nth(1,lists:nth(N,Log));
   true ->
     0
@@ -120,7 +122,7 @@ member(Log,State) ->
 				{NewLog,NewState} = append_entries(Log,State,EntriesState,Pid),
 				member(NewLog,NewState);
       {register,ListOfUniqueIds} ->
-        member(Log,maps:put(peers,sets:union(maps:get(peers,State),ListOfUniqueIds),State));
+        member(Log,maps:put(peers,sets:union(maps:get(peers,State),sets:from_list(ListOfUniqueIds)),State));
       {makeLeader} ->
         NewState = maps:put(currentTerm,maps:get(currentTerm,State)+1,State),
         CommitIndex = maps:get(commitIndex,NewState),
