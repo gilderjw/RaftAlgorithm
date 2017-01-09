@@ -4,7 +4,7 @@
 
 eztest() ->
   dbg:tracer(),
-  eunit:test(raft:ld_2_test_()).
+  eunit:test(raft:ld_8_test_()).
 
 append_entries(Log,State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
@@ -50,11 +50,11 @@ append_entries(Log,State,EntriesState,Pid) ->
     % 5. If leaderCommit > commitIndex, set commitIndex =
     % min(leaderCommit, index of last new entry
     if LeaderCommit > CommitIndex ->
-      NewState = maps:put(commitIndex,min(LeaderCommit,length(NLog)+length(Entries)),NState),      % 4. Append any new entries not already in the log
+      NewState = maps:put(isLeader,false,maps:put(commitIndex,min(LeaderCommit,length(NLog)+length(Entries)),NState)),      % 4. Append any new entries not already in the log
       {lists:append(NLog,Entries),NewState};
     true ->
       % 4. Append any new entries not already in the log
-      {lists:append(NLog,Entries),NState}
+      {lists:append(NLog,Entries),maps:put(isLeader,false,NState)}
     end
   end.
 
@@ -87,6 +87,20 @@ update_member(Log,State,Pid,LastIndex) ->
     nothing
   end.
 
+heartbeat(Log,State) ->
+  io:format(standard_error,"Hearbeat~n",[]),
+  CommitIndex = maps:get(commitIndex,State),
+  lists:foreach(fun(Id) ->
+    append_entries_non_blocking(
+      Id,
+      maps:get(currentTerm,State),
+      CommitIndex,
+      getNthLog(CommitIndex,Log),
+      [],
+      CommitIndex)
+  end, sets:to_list(maps:get(peers,State))).
+  
+
 member(Log,State) ->
 	Enabled = maps:get(enabled,State),
 	if not Enabled ->
@@ -117,7 +131,7 @@ member(Log,State) ->
       {register,ListOfUniqueIds} ->
         member(Log,maps:put(peers,sets:union(maps:get(peers,State),sets:from_list(ListOfUniqueIds)),State));
       {makeLeader,Pid} ->
-        NewState = maps:put(currentTerm,maps:get(currentTerm,State)+1,State),
+        NewState = maps:put(isLeader,true,maps:put(currentTerm,maps:get(currentTerm,State)+1,State)),
         CommitIndex = maps:get(commitIndex,NewState),
         lists:foreach(fun(Id) ->
           append_entries(
@@ -137,9 +151,24 @@ member(Log,State) ->
         update_member(Log,State,Pid,LastIndex),
         ReturnPid ! done,
         member(Log,State);
+      {_,false,Pid} ->
+        io:format(standard_error,"Updating",[]),
+        CommitIndex = maps:get(commitIndex,State),
+        self() ! {updateMember,Pid,CommitIndex,self()},
+        receive done -> done end,
+        member(Log,State);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
-		end
+    after
+      10 ->
+        IsLeader = maps:get(isLeader,State),
+        if IsLeader ->        
+          heartbeat(Log,State),
+          member(Log,State);
+        true ->
+          member(Log,State)
+        end
+    end
 	end.
 
 member() ->
@@ -147,7 +176,8 @@ member() ->
   {peers,sets:from_list([])},
 	{enabled,true},
 	{currentTerm,0},
-	{commitIndex,0}
+	{commitIndex,0},
+  {isLeader,false}
 	])).
 
 start_raft_member(UniqueId) ->
