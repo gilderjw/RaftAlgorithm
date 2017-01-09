@@ -43,10 +43,10 @@ append_entries(Log,State,EntriesState,Pid) ->
       end
     end,
   if not Success ->
-    Pid ! {maps:get(currentTerm,NState),false},
+    Pid ! {maps:get(currentTerm,NState),false,self()},
     {NLog,NState};
   true ->
-    Pid ! {maps:get(currentTerm,NState),true},
+    Pid ! {maps:get(currentTerm,NState),true,self()},
     % 5. If leaderCommit > commitIndex, set commitIndex =
     % min(leaderCommit, index of last new entry
     if LeaderCommit > CommitIndex ->
@@ -67,6 +67,24 @@ getNthLog(N,Log) ->
     A;
   true ->
     0
+  end.
+
+% Id,
+% Term,
+% PrevLogIndex,
+% PrevLogTerm,
+% Entries, % these will be of the form {Term,data} because you can get data from other terms
+% LeaderCommit
+update_member(Log,State,Pid,LastIndex) ->
+  Term = maps:get(currentTerm,State),
+  PrevLogTerm = getNthLog(LastIndex,Log),
+  Entries = lists:nthtail(LastIndex,Log),
+  LeaderCommit = length(Log),
+  {_,Success} = append_entries_pid(Pid,Term,LastIndex,PrevLogTerm,Entries,LeaderCommit),
+  if Success == false ->
+    update_member(Log,State,Pid,LastIndex-1);
+  true ->
+    nothing
   end.
 
 member(Log,State) ->
@@ -114,6 +132,10 @@ member(Log,State) ->
         member(Log,NewState);
       {getPeers,Pid} ->
         Pid ! sets:to_list(maps:get(peers,State)),
+        member(Log,State);
+      {updateMember,Pid,LastIndex,ReturnPid} ->
+        update_member(Log,State,Pid,LastIndex),
+        ReturnPid ! done,
         member(Log,State);
 			{disable} ->
 				member(Log,maps:update(enabled,false,State))
@@ -282,23 +304,23 @@ get_term_and_ci_test_() ->
 % later steps of the protocol.  Then make your append entries filter
 % out everything except what my test case needs from the result
 
-append_entries_non_blocking(Id,
-               Term,
-               PrevLogIndex,
-               PrevLogTerm,
-               Entries, % these will be of the form {Term,data} because you can get data from other terms
-               LeaderCommit) ->
-    whereis(Id) ! {
-      appendEntries,
-      maps:from_list([
-        {term,Term},
-        {prevLogIndex,PrevLogIndex},
-        {prevLogTerm,PrevLogTerm},
-        {entries,Entries},
-        {leaderCommit,LeaderCommit}
-      ]),
-      self()
-    }.
+append_entries_non_blocking(Pid,
+             Term,
+             PrevLogIndex,
+             PrevLogTerm,
+             Entries, % these will be of the form {Term,data} because you can get data from other terms
+             LeaderCommit) ->
+  Pid ! {
+    appendEntries,
+    maps:from_list([
+      {term,Term},
+      {prevLogIndex,PrevLogIndex},
+      {prevLogTerm,PrevLogTerm},
+      {entries,Entries},
+      {leaderCommit,LeaderCommit}
+    ]),
+    self()
+  }.
 
 append_entries(Id,
                Term,
@@ -306,11 +328,29 @@ append_entries(Id,
                PrevLogTerm,
                Entries, % these will be of the form {Term,data} because you can get data from other terms
                LeaderCommit) ->
-    append_entries_non_blocking(Id,Term,PrevLogIndex,PrevLogTerm,Entries,LeaderCommit),
-    receive
-      Result -> Result
-    end.
+  append_entries_non_blocking(whereis(Id),Term,PrevLogIndex,PrevLogTerm,Entries,LeaderCommit),
+  receive
+    {A,B,_} -> {A,B}
+  end.
 
+append_entries_pid(Pid,Term,PrevLogIndex,PrevLogTerm,Entries,LeaderCommit) ->
+  Pid ! {
+    appendEntries,
+    maps:from_list([
+      {term,Term},
+      {prevLogIndex,PrevLogIndex},
+      {prevLogTerm,PrevLogTerm},
+      {entries,Entries},
+      {leaderCommit,LeaderCommit}
+    ]),
+    self()
+  },
+  %io:format(standard_error,"Waiting~n",[]),
+  receive
+    {A,B,_} ->
+      %io:format(standard_error,"Received~n",[]),
+      {A,B}
+  end.
 
 
 % case 1: term is higher, prevs match, so data is added
@@ -510,7 +550,7 @@ ld_1_test_() ->
 % notified if your entry was added, but get_log and get_commit_index
 % will work fine for us in this regard.
 
-receive_aknowledge(TotalSuccess,TotalFail,TotalResponses) ->
+receive_aknowledge(TotalSuccess,TotalFail,TotalResponses,Leader,CommitIndex,Data) ->
   if (TotalSuccess + TotalFail == TotalResponses) ->
     if (TotalSuccess >= (TotalResponses/2)) ->   
       true;
@@ -519,42 +559,52 @@ receive_aknowledge(TotalSuccess,TotalFail,TotalResponses) ->
     end;
   true ->
     receive
-      {_,true} ->
-        receive_aknowledge(TotalSuccess+1,TotalFail,TotalResponses);
-      {_,false} ->
-        receive_aknowledge(TotalSuccess,TotalFail+1,TotalResponses)
+      {_,true,_} ->
+        receive_aknowledge(TotalSuccess+1,TotalFail,TotalResponses,Leader,CommitIndex,Data);
+      {_,false,Pid} ->
+        Leader ! {updateMember,Pid,CommitIndex,self()},
+        receive
+          done -> sendUpdate(Pid,Data)
+        end,
+        receive_aknowledge(TotalSuccess,TotalFail,TotalResponses,Leader,CommitIndex,Data)
     after
       5 ->
-        receive_aknowledge(TotalSuccess,TotalFail+1,TotalResponses)
+        receive_aknowledge(TotalSuccess,TotalFail+1,TotalResponses,Leader,CommitIndex,Data)
     end
   end.
 
+
+sendUpdate(Pid,Data) ->
+  append_entries_non_blocking(
+    Pid,
+    maps:get(term,Data),
+    maps:get(index,Data),
+    maps:get(prevTerm,Data),
+    maps:get(entry,Data),
+    maps:get(commitIndex,Data)).
 
 new_entry(Id, NewEntryData) ->
   CurrentTerm = get_term(Id),
   Entry = [{CurrentTerm,NewEntryData}],
   CommitIndex = get_commit_index(Id),
   NthLog = getNthLog(CommitIndex,get_log(Id)),
-
+  Data = #{
+    term=>CurrentTerm,
+    index=>CommitIndex,
+    prevTerm=>NthLog,
+    entry=>Entry,
+    commitIndex=>CommitIndex+1
+  },
   whereis(Id) ! {getPeers,self()},
   receive
     Peers ->
       PeersWithoutLeader = lists:delete(Id,Peers),
-      lists:foreach(fun(NewId) ->
-          append_entries_non_blocking(
-            NewId,
-            CurrentTerm,
-            CommitIndex,
-            NthLog,
-            Entry,
-            CommitIndex+1)
-          end,
-        PeersWithoutLeader),
-      RA = receive_aknowledge(1,0,length(Peers)),
+      lists:foreach(fun(NewId) -> sendUpdate(whereis(NewId),Data) end, PeersWithoutLeader),
+      RA = receive_aknowledge(1,0,length(Peers),Id,CommitIndex,Data),
       if RA == true ->
         append_entries(Id,CurrentTerm,CommitIndex,NthLog,Entry,CommitIndex+1);
       true ->
-        member_offline.
+        member_offline
       end
   end.
 
