@@ -331,6 +331,9 @@ append_entries(Id,
   append_entries_non_blocking(whereis(Id),Term,PrevLogIndex,PrevLogTerm,Entries,LeaderCommit),
   receive
     {A,B,_} -> {A,B}
+  after
+    5 ->
+      false
   end.
 
 append_entries_pid(Pid,Term,PrevLogIndex,PrevLogTerm,Entries,LeaderCommit) ->
