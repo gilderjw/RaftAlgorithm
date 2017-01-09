@@ -3,14 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 eztest() ->
-  setup(),
-  %dbg:tracer(),
-  make_leader(m1),
-  new_entry(m1,newEntry),
-  erlang:display(get_log(m1)),
-  timer:sleep(20),
-  cleanup(blah).
-  %eunit:test(raft:ld_2_test_()).
+  dbg:tracer(),
+  eunit:test(raft:ld_2_test_()).
 
 append_entries(Log,State,EntriesState,Pid) ->
 	Term = maps:get(term,EntriesState),
@@ -81,8 +75,8 @@ member(Log,State) ->
 		receive
 			{enable} ->
 				member(Log,maps:update(enabled,true,State));
-			_ ->
-				member(Log,State)
+      _ ->
+        member(Log,State)
 		end;
 	true ->
 		receive
@@ -288,14 +282,14 @@ get_term_and_ci_test_() ->
 % later steps of the protocol.  Then make your append entries filter
 % out everything except what my test case needs from the result
 
-append_entries(Id,
+append_entries_non_blocking(Id,
                Term,
                PrevLogIndex,
                PrevLogTerm,
                Entries, % these will be of the form {Term,data} because you can get data from other terms
                LeaderCommit) ->
     whereis(Id) ! {
-    	appendEntries,
+      appendEntries,
       maps:from_list([
         {term,Term},
         {prevLogIndex,PrevLogIndex},
@@ -304,7 +298,15 @@ append_entries(Id,
         {leaderCommit,LeaderCommit}
       ]),
       self()
-    },
+    }.
+
+append_entries(Id,
+               Term,
+               PrevLogIndex,
+               PrevLogTerm,
+               Entries, % these will be of the form {Term,data} because you can get data from other terms
+               LeaderCommit) ->
+    append_entries_non_blocking(Id,Term,PrevLogIndex,PrevLogTerm,Entries,LeaderCommit),
     receive
       Result -> Result
     end.
@@ -508,12 +510,25 @@ ld_1_test_() ->
 % notified if your entry was added, but get_log and get_commit_index
 % will work fine for us in this regard.
 
-% append_entries(Id,
-%                Term,
-%                PrevLogIndex,
-%                PrevLogTerm,
-%                Entries, % these will be of the form {Term,data} because you can get data from other terms
-%                LeaderCommit) ->
+receive_aknowledge(TotalSuccess,TotalFail,TotalResponses) ->
+  if (TotalSuccess + TotalFail == TotalResponses) ->
+    if (TotalSuccess >= (TotalResponses/2)) ->   
+      true;
+    true ->
+      false
+    end;
+  true ->
+    receive
+      {_,true} ->
+        receive_aknowledge(TotalSuccess+1,TotalFail,TotalResponses);
+      {_,false} ->
+        receive_aknowledge(TotalSuccess,TotalFail+1,TotalResponses)
+    after
+      5 ->
+        receive_aknowledge(TotalSuccess,TotalFail+1,TotalResponses)
+    end
+  end.
+
 
 new_entry(Id, NewEntryData) ->
   CurrentTerm = get_term(Id),
@@ -521,18 +536,12 @@ new_entry(Id, NewEntryData) ->
   CommitIndex = get_commit_index(Id),
   NthLog = getNthLog(CommitIndex,get_log(Id)),
 
-  %erlang:display(#{
-                 % term=>CurrentTerm,
-                 % commitIndex=>CommitIndex,
-                 % nthLog=>NthLog,
-                 % entry=>Entry,
-                 % leaderCommit=>CommitIndex+1
-                 % }),
   whereis(Id) ! {getPeers,self()},
   receive
     Peers ->
+      PeersWithoutLeader = lists:delete(Id,Peers),
       lists:foreach(fun(NewId) ->
-          append_entries(
+          append_entries_non_blocking(
             NewId,
             CurrentTerm,
             CommitIndex,
@@ -540,7 +549,13 @@ new_entry(Id, NewEntryData) ->
             Entry,
             CommitIndex+1)
           end,
-        Peers)
+        PeersWithoutLeader),
+      RA = receive_aknowledge(1,0,length(Peers)),
+      if RA == true ->
+        append_entries(Id,CurrentTerm,CommitIndex,NthLog,Entry,CommitIndex+1);
+      true ->
+        member_offline.
+      end
   end.
 
 ld_2_test_() ->
